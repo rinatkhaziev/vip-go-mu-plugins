@@ -25,8 +25,8 @@ class A8C_Files {
 
 		// Upload size limit is 1GB
 		add_filter( 'upload_size_limit', function() {
-			return 1073741824; // pow( 2, 30 )
-		});
+			return GB_IN_BYTES;
+		} );
 
 		// Hooks for the mu-plugin WordPress Importer
 		add_filter( 'load-importer-wordpress', array( &$this, 'check_to_download_file' ), 10 );
