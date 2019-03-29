@@ -11,8 +11,15 @@ class VIP_Do_Pings {
 	const VERSION = '1.0';
 
 	public static function init() {
-		add_action( 'schedule_event', [ __CLASS__ . 'disable_pings' ] );
-		add_action( 'init', [ __CLASS__, self::CRON_HOOK ] );
+		add_action( 'schedule_event', [ __CLASS__, 'disable_pings' ] );
+
+		if ( true === apply_filters( 'wpcom_vip_disable_do_all_pings_cron', false ) ) {
+			self::maybe_clear_do_all_pings();
+			return;
+		}
+
+		self::schedule_do_all_pings();
+
 		add_action( self::CRON_HOOK, '\do_all_pings' );
 	}
 
@@ -30,13 +37,8 @@ class VIP_Do_Pings {
 	}
 
 	public static function schedule_do_all_pings() {
-		if ( true === apply_filters( 'wpcom_vip_disable_do_all_pings_cron', false ) ) {
+		if ( ! self::is_same_version() ) {
 			self::maybe_clear_do_all_pings();
-			return;
-		}
-
-		if ( ! is_same_version() ) {
-			self::clear_do_all_pings();
 			update_option( self::OPTION, self::VERSION );
 		}
 
@@ -51,10 +53,10 @@ class VIP_Do_Pings {
 		}
 	}
 
-	private static is_same_version() {
+	private static function is_same_version() {
 		return self::VERSION === get_option( self::OPTION );
 	}
 
 }
 
-add_action( 'init', [ 'Automattic\VIP\Performance\VIP_Do_All_Pings', 'init' ] );
+add_action( 'init', [ 'Automattic\VIP\Performance\VIP_Do_Pings', 'init' ] );
