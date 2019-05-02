@@ -15,6 +15,11 @@
 require_once( __DIR__ . '/jetpack-mandatory.php' );
 
 /**
+ * Load VIP Jetpack Sync Cron plugin
+ */
+require_once( __DIR__ . '/vip-jetpack-sync-cron.php' );
+
+/**
  * Remove certain modules from the list of those that can be activated
  * Blocks access to certain functionality that isn't compatible with the platform.
  */
