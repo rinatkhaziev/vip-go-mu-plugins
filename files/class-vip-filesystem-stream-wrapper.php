@@ -117,6 +117,15 @@ class VIP_Filesystem_Stream_Wrapper {
 	public static ?API_Client $default_client = null;
 
 	/**
+	 * Subset of files that should not make remote calls
+	 *
+	 * @since   1.0.0
+	 * @access  private
+	 * @var     array   Local files
+	 */
+	private $local_files = [];
+
+	/**
 	 * Vip_Filesystem_Stream constructor.
 	 *
 	 * @param API_Client $client
@@ -180,6 +189,18 @@ class VIP_Filesystem_Stream_Wrapper {
 
 		if ( ! $this->validate( $path, $mode ) ) {
 			return false;
+		}
+
+		if ( in_array( $path, $this->local_files, true ) ) {
+			// Handle local files
+			$file = $this->string_to_resource( '', $mode );
+			$meta = stream_get_meta_data( $file );
+			$this->seekable = $meta['seekable'];
+			$this->uri = $meta['uri'];
+			$this->file = $file;
+			$this->path = $path;
+			$this->mode = $mode;
+			return true;
 		}
 
 		try {
@@ -313,6 +334,11 @@ class VIP_Filesystem_Stream_Wrapper {
 			return false;
 		}
 
+		if ( in_array( $this->path, $this->local_files, true ) ) {
+			// Handle local files
+			return fflush( $this->file );
+		}
+
 		try {
 			// Upload to file service
 			$result = $this->client->upload_file( $this->uri, $this->path );
@@ -439,6 +465,11 @@ class VIP_Filesystem_Stream_Wrapper {
 		$this->debug( sprintf( 'unlink =>  %s', $path ), true );
 
 		$path = $this->trim_path( $path );
+
+		if ( in_array( $path, $this->local_files, true ) ) {
+			// Handle local files
+			return true;
+		}
 
 		try {
 			$result = $this->client->delete_file( $path );
@@ -930,5 +961,17 @@ class VIP_Filesystem_Stream_Wrapper {
 		}
 
 		return array_values( $trace );
+	}
+
+	/**
+	 * Set the local files property
+	 *
+	 * @since   1.0.0
+	 * @access  public
+	 *
+	 * @param   array   $local_files    Array of local files
+	 */
+	public function set_local_files( array $local_files ) {
+		$this->local_files = $local_files;
 	}
 }

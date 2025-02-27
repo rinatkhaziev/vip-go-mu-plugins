@@ -33,6 +33,10 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 
 		$this->uploads = $filesystem_uploads;
 		$this->direct  = $filesystem_direct;
+
+		// Set local files
+		$local_files = apply_filters( 'vip_filesystem_local_files', [] );
+		$this->uploads->set_local_files( $local_files );
 	}
 
 	/**

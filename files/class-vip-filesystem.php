@@ -83,6 +83,10 @@ class VIP_Filesystem {
 		$this->stream_wrapper = new VIP_Filesystem_Stream_Wrapper( new_api_client(),
 		self::PROTOCOL );
 		$this->stream_wrapper->register();
+
+		// Set local files
+		$local_files = apply_filters( 'vip_filesystem_local_files', [] );
+		$this->stream_wrapper->set_local_files( $local_files );
 	}
 
 	/**

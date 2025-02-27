@@ -11,6 +11,9 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	/** @var API_Client */
 	private $api;
 
+	/** @var array */
+	private $local_files = [];
+
 	public function __construct( Api_Client $api_client ) {
 		$this->method = 'vip-uploads';
 		$this->errors = new \WP_Error();
@@ -56,6 +59,11 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	 */
 	public function get_contents( $file ) {
 		$uploads_path = $this->sanitize_uploads_path( $file );
+
+		if ( in_array( $uploads_path, $this->local_files, true ) ) {
+			// Handle local files
+			return file_get_contents( $uploads_path );
+		}
 
 		$content = $this->api->get_file_content( $uploads_path );
 		if ( is_wp_error( $content ) ) {
@@ -106,6 +114,11 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	public function put_contents( $file_path, $contents, $mode = false ) {
 		$uploads_path = $this->sanitize_uploads_path( $file_path );
 
+		if ( in_array( $uploads_path, $this->local_files, true ) ) {
+			// Handle local files
+			return file_put_contents( $uploads_path, $contents ) !== false;
+		}
+
 		$file_name     = basename( $file_path );
 		$tmp_file_path = tempnam( get_temp_dir(), 'uploads-' . $file_name );    // phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_tempnam
 		file_put_contents( $tmp_file_path, $contents );                         // phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_file_put_contents
@@ -131,6 +144,11 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	 */
 	public function delete( $file, $recursive = false, $type = false ) {
 		$uploads_path = $this->sanitize_uploads_path( $file );
+
+		if ( in_array( $uploads_path, $this->local_files, true ) ) {
+			// Handle local files
+			return unlink( $uploads_path );
+		}
 
 		$response = $this->api->delete_file( $uploads_path );
 		if ( is_wp_error( $response ) ) {
@@ -488,5 +506,14 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 		trigger_error( $error_msg, E_USER_WARNING );
 
 		return $return_value;
+	}
+
+	/**
+	 * Set the local files property
+	 *
+	 * @param array $local_files Array of local files
+	 */
+	public function set_local_files( array $local_files ) {
+		$this->local_files = $local_files;
 	}
 }
