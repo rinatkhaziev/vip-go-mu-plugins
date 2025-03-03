@@ -81,8 +81,12 @@ class VIP_Filesystem {
 
 		// Create and register stream
 		$this->stream_wrapper = new VIP_Filesystem_Stream_Wrapper( new_api_client(),
-			self::PROTOCOL );
+		self::PROTOCOL );
 		$this->stream_wrapper->register();
+
+		// Set local files
+		$local_files = apply_filters( 'vip_filesystem_local_files', [] );
+		$this->stream_wrapper->set_local_files( $local_files );
 	}
 
 	/**
@@ -97,9 +101,17 @@ class VIP_Filesystem {
 		add_filter( 'wp_handle_upload_prefilter', [ $this, 'filter_validate_file' ] );
 		add_filter( 'wp_handle_sideload_prefilter', [ $this, 'filter_validate_file' ] );
 		add_filter( 'wp_delete_file', [ $this, 'filter_delete_file' ], 20, 1 );
-		add_filter( 'get_attached_file', [ $this, 'filter_get_attached_file' ], 20, 2 );
+		add_filter( 'get_attached_file', [ $this, 'filter_get_attached_file' ], 20 );
 		add_filter( 'wp_generate_attachment_metadata', [ $this, 'filter_wp_generate_attachment_metadata' ], 10, 2 );
 		add_filter( 'wp_read_image_metadata', [ $this, 'filter_wp_read_image_metadata' ], 10, 2 );
+
+		/**
+		 * The core's function recurse_dirsize would call to opendir() which is not supported by the
+		 * VIP File service and would always fail with Warning.
+		 *
+		 * To avoid this we will short-circuit the execution and return 0 as folder size.
+		 */
+		add_filter( 'pre_recurse_dirsize', '__return_zero' );
 	}
 
 	/**
@@ -109,7 +121,6 @@ class VIP_Filesystem {
 	 * @access   private
 	 */
 	private function remove_filters() {
-
 		remove_filter( 'upload_dir', [ $this, 'filter_upload_dir' ], 10 );
 		remove_filter( 'wp_handle_upload_prefilter', [ $this, 'filter_validate_file' ] );
 		remove_filter( 'wp_handle_sideload_prefilter', [ $this, 'filter_validate_file' ] );
@@ -117,6 +128,7 @@ class VIP_Filesystem {
 		remove_filter( 'get_attached_file', [ $this, 'filter_get_attached_file' ], 20 );
 		remove_filter( 'wp_generate_attachment_metadata', [ $this, 'filter_wp_generate_attachment_metadata' ] );
 		remove_filter( 'wp_read_image_metadata', [ $this, 'filter_wp_read_image_metadata' ], 10, 2 );
+		remove_filter( 'pre_recurse_dirsize', '__return_zero' );
 	}
 
 	/**
@@ -135,26 +147,26 @@ class VIP_Filesystem {
 		 * then be removed.
 		 * - Hanif
 		 */
-		$pos = stripos( $params['path'], LOCAL_UPLOADS );
+		$pos = stripos( $params['path'], constant( 'LOCAL_UPLOADS' ) );
 		if ( false !== $pos ) {
 			$params['path']    = substr_replace( $params['path'],
 				self::PROTOCOL . '://wp-content/uploads',
 				$pos,
-				strlen( LOCAL_UPLOADS ) );
-			$params['basedir']    = substr_replace( $params['basedir'],
+			strlen( constant( 'LOCAL_UPLOADS' ) ) );
+			$params['basedir'] = substr_replace( $params['basedir'],
 				self::PROTOCOL . '://wp-content/uploads',
 				$pos,
-				strlen( LOCAL_UPLOADS ) );
+			strlen( constant( 'LOCAL_UPLOADS' ) ) );
 		} else {
-			$pos = stripos( $params['path'], WP_CONTENT_DIR );
+			$pos               = stripos( $params['path'], constant( 'WP_CONTENT_DIR' ) );
 			$params['path']    = substr_replace( $params['path'],
 				self::PROTOCOL . '://wp-content',
 				$pos,
-				strlen( WP_CONTENT_DIR ) );
-			$params['basedir']    = substr_replace( $params['basedir'],
+			strlen( constant( 'WP_CONTENT_DIR' ) ) );
+			$params['basedir'] = substr_replace( $params['basedir'],
 				self::PROTOCOL . '://wp-content',
 				$pos,
-				strlen( WP_CONTENT_DIR ) );
+			strlen( constant( 'WP_CONTENT_DIR' ) ) );
 		}
 
 		return $params;
@@ -166,17 +178,18 @@ class VIP_Filesystem {
 	 * @param  string[]  An array of data for a single file.
 	 */
 	public function filter_validate_file( $file ) {
-		$file_name = $file['name'];
+		$file_name   = rawurlencode( $file['name'] );
 		$upload_path = trailingslashit( $this->get_upload_path() );
-		$file_path = $upload_path . $file_name;
+		$file_path   = $upload_path . $file_name;
 
-		// TODO: run through unique filename?
-
-		$check_type = $this->validate_file_type( $file_path );
-		if ( is_wp_error( $check_type ) ) {
-			$file['error'] = $check_type->get_error_message();
+		$check_file_name = $this->validate_file_name( $file_path );
+		if ( is_wp_error( $check_file_name ) ) {
+			$file['error'] = $check_file_name->get_error_message();
 
 			return $file;
+		} elseif ( $check_file_name !== $file_name ) {
+				$file['name'] = $check_file_name;
+				$file_path    = $upload_path . $check_file_name;
 		}
 
 		$check_length = $this->validate_file_path_length( $file_path );
@@ -213,22 +226,23 @@ class VIP_Filesystem {
 	 *
 	 * @param   string      $file_path   Path starting with /wp-content/uploads
 	 *
-	 * @return  WP_Error|bool        True if filetype is supported. Else WP_Error.
+	 * @return  WP_Error|string        Unique Filename string if filetype is supported. Else WP_Error.
 	 */
-	protected function validate_file_type( $file_path ) {
+	protected function validate_file_name( $file_path ) {
 		$result = $this->stream_wrapper->client->get_unique_filename( $file_path );
 
 		if ( is_wp_error( $result ) ) {
 			if ( 'invalid-file-type' !== $result->get_error_code() ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
 				trigger_error(
+					// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 					sprintf( '%s #vip-go-streams', $result->get_error_message() ),
 					E_USER_WARNING
 				);
 			}
-			return $result;
 		}
 
-		return true;
+		return $result;
 	}
 
 	/**
@@ -263,13 +277,14 @@ class VIP_Filesystem {
 
 		$file_path = $this->clean_file_path( $file_path );
 
-		$file_uri  = $this->get_file_uri_path( $file_path );
+		$file_uri = $this->get_file_uri_path( $file_path );
 
 		if ( in_array( $file_uri, $deleted_uris, true ) ) {
 			// This file has already been successfully deleted from the file service in this request
 			return '';
 		}
 
+		// phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_unlink
 		if ( ! unlink( $file_path ) ) {
 			return '';
 		}
@@ -299,26 +314,33 @@ class VIP_Filesystem {
 	 */
 	private function clean_file_path( $file_path ) {
 		$upload_path = wp_get_upload_dir();
+		$basedir     = $upload_path['basedir'];
+		$basedir_len = strlen( $basedir );
 
-		// Find 2nd occurrence of `basedir`
-		$pos = strpos( $file_path, $upload_path['basedir'], strlen( $upload_path['basedir'] ) );
-		if ( false !== $pos ) {
-			// +1 to account far trailing slash
-			$file_path = substr( $file_path, strlen( $upload_path['basedir'] ) + 1 );
+		// Find 2nd occurrence of `basedir`; `$file_path` should be at least twice as long as `basedir`
+		if ( strlen( $file_path ) >= 2 * $basedir_len ) {
+			$pos = strpos( $file_path, $basedir, $basedir_len );
+			if ( false !== $pos ) {
+				// +1 to account far trailing slash
+				$file_path = substr( $file_path, $basedir_len + 1 );
+			}
 		}
 
 		// Strip any query params that snuck through
-		$queryStringStart = strpos( $file_path, '?' );
+		$query_string_start = strpos( $file_path, '?' );
 
-		if ( false !== $queryStringStart ) {
-			$file_path = substr( $file_path, 0, $queryStringStart );
+		if ( false !== $query_string_start ) {
+			$file_path = substr( $file_path, 0, $query_string_start );
 		}
 
 		return $file_path;
 	}
 
 	/**
-	 * Filters the generated attachment metadata
+	 * Filters the generated attachment metadata and adds "filesize".
+	 *
+	 * WP 6.0+ will be handling this automatically.
+	 * @see https://core.trac.wordpress.org/ticket/49412
 	 *
 	 * @return array
 	 */
@@ -379,10 +401,13 @@ class VIP_Filesystem {
 		$invalidation_url = get_site_url() . $file_uri;
 
 		if ( ! \WPCOM_VIP_Cache_Manager::instance()->queue_purge_url( $invalidation_url ) ) {
+			// phpcs:disable WordPress.Security.EscapeOutput.OutputNotEscaped, WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
 			trigger_error(
+				/* translators: invalidation url */
 				sprintf( __( 'Error purging %s from the cache service #vip-go-streams' ), $invalidation_url ),
 				E_USER_WARNING
 			);
+			// phpcs:enable
 		}
 	}
 
@@ -395,16 +420,15 @@ class VIP_Filesystem {
 	 * @since   1.0.0
 	 * @access  public
 	 *
-	 * @param   string  $file           Path to file
-	 * @param   int     $attachment_id  Attachment post ID
+	 * @param   string  $file Path to file
 	 *
 	 * @return  string  Path to file
 	 */
-	public function filter_get_attached_file( $file, $attachment_id ) {
+	public function filter_get_attached_file( $file ) {
 		$uploads = wp_get_upload_dir();
 
-		if ( $file && false !== strpos( $file, $uploads[ 'baseurl' ] ) ) {
-			$file = str_replace( $uploads[ 'baseurl' ] . '/', '', $file );
+		if ( $file && false !== strpos( $file, $uploads['baseurl'] ) ) {
+			$file = str_replace( $uploads['baseurl'] . '/', '', $file );
 		}
 
 		return $file;
@@ -430,11 +454,13 @@ class VIP_Filesystem {
 
 		// Save a local copy and read metadata from that
 		$temp_file = wp_tempnam();
+		// phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_file_put_contents, WordPressVIPMinimum.Performance.FetchingRemoteData.FileGetContentsUnknown
 		file_put_contents( $temp_file, file_get_contents( $file ) );
 		$meta = wp_read_image_metadata( $temp_file );
 
 		add_filter( 'wp_read_image_metadata', [ $this, 'filter_wp_read_image_metadata' ], 10, 2 );
 
+		// phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_unlink
 		unlink( $temp_file );
 
 		return $meta;

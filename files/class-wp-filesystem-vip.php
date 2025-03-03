@@ -2,20 +2,19 @@
 
 namespace Automattic\VIP\Files;
 
-require_once( ABSPATH . 'wp-admin/includes/file.php' );
-require_once( ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php' );
-require_once( ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php' );
+require_once ABSPATH . 'wp-admin/includes/file.php';
+require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
+require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-direct.php';
 
-require_once( __DIR__ . '/class-wp-filesystem-vip-uploads.php' );
-require_once( __DIR__ . '/class-api-client.php' );
+require_once __DIR__ . '/class-wp-filesystem-vip-uploads.php';
+require_once __DIR__ . '/class-api-client.php';
 
 use WP_Error;
+use WP_Filesystem_Base;
 use WP_Filesystem_Direct;
 
 class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 
-	/** @var WP_Filesystem_VIP_Uploads */
-	private $api;
 	/** @var WP_Filesystem_Direct */
 	private $direct;
 
@@ -26,10 +25,19 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 		$this->method = 'vip';
 		$this->errors = new WP_Error();
 
+		if ( ! is_array( $dependencies ) || 2 !== count( $dependencies ) ) {
+			$dependencies = request_filesystem_credentials( site_url() );
+		}
+
 		list( $filesystem_uploads, $filesystem_direct ) = $dependencies;
 
 		$this->uploads = $filesystem_uploads;
 		$this->direct  = $filesystem_direct;
+
+		// Set local files
+		$local_files = apply_filters( 'vip_filesystem_local_files', [] );
+		$this->uploads->set_local_files( $local_files );
+		$this->set_local_files( $local_files );
 	}
 
 	/**
@@ -43,7 +51,7 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 	 */
 	private function get_transport_for_path( $filename, $context = 'read' ) {
 		// If we're not in a VIP environment, allow some WP_CLI functionality to work.
-		if ( true !== VIP_GO_ENV ) {
+		if ( ! defined( 'VIP_GO_ENV' ) || true !== constant( 'VIP_GO_ENV' ) ) {
 			// Allow access to the maintenance file used by WP-CLI.
 			if ( $this->is_maintenance_file( $filename ) ) {
 				return $this->direct;
@@ -67,7 +75,7 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 		// Uploads paths can just use PHP functions when stream wrapper is enabled.
 		// This is because wp_upload_dir will return a vip:// path.
 		if ( $this->is_uploads_path( $filename ) ) {
-			if ( defined( 'VIP_FILESYSTEM_USE_STREAM_WRAPPER' ) && true === VIP_FILESYSTEM_USE_STREAM_WRAPPER ) {
+			if ( defined( 'VIP_FILESYSTEM_USE_STREAM_WRAPPER' ) && true === constant( 'VIP_FILESYSTEM_USE_STREAM_WRAPPER' ) ) {
 				return $this->direct;
 			}
 
@@ -79,7 +87,7 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 		}
 
 		$upload_dir = wp_get_upload_dir()['basedir'];
-		$temp_dir = get_temp_dir();
+		$temp_dir   = get_temp_dir();
 
 		/* Translators: 1) file name 2) class name 3) tmp dir path 4) uploads dir path */
 		$error_msg = sprintf( __( 'The `%1$s` file cannot be managed by the `%2$s` class. Writes are only allowed for the `%3$s` and `%4$s` directories and reads can be performed everywhere.' ), $filename, __CLASS__, $temp_dir, $upload_dir );
@@ -87,7 +95,8 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 		$this->errors->add( 'unsupported-filepath', $error_msg );
 
 		// TODO: Do we want to trigger_error in all environments? (Or just a small batch to start).
-		trigger_error( $error_msg, E_USER_WARNING );
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error
+		trigger_error( esc_html( $error_msg ), E_USER_WARNING );
 
 		return false;
 	}
@@ -112,12 +121,12 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 	}
 
 	private function is_wp_content_subfolder_path( $file_path, $subfolder ) {
-		$upgrade_base = sprintf( '%s/%s', WP_CONTENT_DIR, $subfolder );
+		$upgrade_base = sprintf( '%s/%s', constant( 'WP_CONTENT_DIR' ), $subfolder );
 		return 0 === strpos( $file_path, $upgrade_base . '/' ) || $file_path === $upgrade_base;
 	}
 
 	private function is_upgrade_path( $file_path ) {
-		return $this->is_wp_content_subfolder_path( $file_path, 'upgrade' );
+		return $this->is_wp_content_subfolder_path( $file_path, 'upgrade' ) || $this->is_wp_content_subfolder_path( $file_path, 'upgrade-temp-backup' );
 	}
 
 	private function is_plugins_path( $file_path ) {
@@ -219,9 +228,13 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 			return false;
 		}
 
+		if ( $source_transport instanceof WP_Filesystem_Direct && $destination_transport instanceof WP_Filesystem_Direct ) {
+			return $source_transport->copy( $source, $destination, $overwrite, $mode );
+		}
+
 		$destination_exists = $destination_transport->exists( $destination );
 		if ( ! $overwrite && $destination_exists ) {
-			/* translators 1: destination file path 2: overwrite param 3: `true` boolean value */
+			/* translators: 1: destination file path 2: overwrite param 3: `true` boolean value */
 			$this->errors->add( 'destination-exists', sprintf( __( 'The destination path (`%1$s`) already exists and `%2$s` was not not set to `%3$s`.' ), $destination, '$overwrite', 'true' ) );
 			return false;
 		}
@@ -239,7 +252,6 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 		}
 
 		return $put_results;
-
 	}
 
 	/**
@@ -250,13 +262,24 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 	 * @return bool
 	 */
 	public function move( $source, $destination, $overwrite = false ) {
-		$copy_results = $this->copy( $source, $destination, $overwrite );
-		if ( false === $copy_results ) {
-			return false;
+		$source_transport      = $this->get_transport_for_path( $source );
+		$destination_transport = $this->get_transport_for_path( $destination, 'write' );
+		if ( $source_transport instanceof WP_Filesystem_Direct && $destination_transport instanceof WP_Filesystem_Direct ) {
+			return $source_transport->move( $source, $destination, $overwrite );
 		}
 
-		// We don't need to set the errors here since delete() will take care of it
-		return $this->delete( $source );
+		// WP_Filesystem_Direct::get_contents() invoked by copy() will return '' for directories; this will result in directories being copied as empty files.
+		if ( $source_transport instanceof WP_Filesystem_Base && $source_transport->is_file( $source ) ) {
+			$copy_results = $this->copy( $source, $destination, $overwrite );
+			if ( false === $copy_results ) {
+				return false;
+			}
+
+			// We don't need to set the errors here since delete() will take care of it
+			return $this->delete( $source );
+		}
+
+		return false;
 	}
 
 	/**
@@ -752,5 +775,14 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 		}
 
 		return $return;
+	}
+
+	/**
+	 * Set the local files property
+	 *
+	 * @param array $local_files Array of local files
+	 */
+	public function set_local_files( array $local_files ) {
+		$this->local_files = $local_files;
 	}
 }

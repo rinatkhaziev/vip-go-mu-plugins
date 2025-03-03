@@ -2,14 +2,17 @@
 
 namespace Automattic\VIP\Files;
 
-require_once( ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php' );
+require_once ABSPATH . 'wp-admin/includes/class-wp-filesystem-base.php';
 
-require_once( __DIR__ . '/class-api-client.php' );
+require_once __DIR__ . '/class-api-client.php';
 
 class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 
 	/** @var API_Client */
 	private $api;
+
+	/** @var array */
+	private $local_files = [];
 
 	public function __construct( Api_Client $api_client ) {
 		$this->method = 'vip-uploads';
@@ -26,7 +29,7 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 		$sanitized_path = $path;
 
 		$wp_content_dir = WP_CONTENT_DIR;
-		$upload_dir = wp_get_upload_dir();
+		$upload_dir     = wp_get_upload_dir();
 		$upload_basedir = $upload_dir['basedir'];
 
 		// WP_CONTENT_DIR and wp_get_upload_dir() may not be the same.
@@ -56,6 +59,11 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	 */
 	public function get_contents( $file ) {
 		$uploads_path = $this->sanitize_uploads_path( $file );
+
+		if ( in_array( $uploads_path, $this->local_files, true ) ) {
+			// Handle local files
+			return file_get_contents( $uploads_path );
+		}
 
 		$content = $this->api->get_file_content( $uploads_path );
 		if ( is_wp_error( $content ) ) {
@@ -106,12 +114,18 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	public function put_contents( $file_path, $contents, $mode = false ) {
 		$uploads_path = $this->sanitize_uploads_path( $file_path );
 
-		$file_name = basename( $file_path );
-		$tmp_file_path = tempnam( get_temp_dir(), 'uploads-' . $file_name );
-		file_put_contents( $tmp_file_path, $contents );
+		if ( in_array( $uploads_path, $this->local_files, true ) ) {
+			// Handle local files
+			return file_put_contents( $uploads_path, $contents ) !== false;
+		}
+
+		$file_name     = basename( $file_path );
+		$tmp_file_path = tempnam( get_temp_dir(), 'uploads-' . $file_name );    // phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_tempnam
+		file_put_contents( $tmp_file_path, $contents );                         // phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_file_put_contents
 
 		$response = $this->api->upload_file( $tmp_file_path, $uploads_path );
 
+		// phpcs:ignore WordPressVIPMinimum.Functions.RestrictedFunctions.file_ops_unlink
 		unlink( $tmp_file_path );
 
 		if ( is_wp_error( $response ) ) {
@@ -130,6 +144,11 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	 */
 	public function delete( $file, $recursive = false, $type = false ) {
 		$uploads_path = $this->sanitize_uploads_path( $file );
+
+		if ( in_array( $uploads_path, $this->local_files, true ) ) {
+			// Handle local files
+			return unlink( $uploads_path );
+		}
 
 		$response = $this->api->delete_file( $uploads_path );
 		if ( is_wp_error( $response ) ) {
@@ -267,10 +286,12 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	 * @return bool True if file copied successfully, False otherwise.
 	 */
 	public function copy( $source, $destination, $overwrite = false, $mode = false ) {
+		// translators: 1: method name
 		$error_msg = sprintf( __( 'The `%s` method cannot be called directly. Please use `WP_Filesystem_VIP::copy` instead' ), __METHOD__ );
 
 		$this->errors->add( 'incorrect-usage', $error_msg );
 
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error, WordPress.Security.EscapeOutput.OutputNotEscaped
 		trigger_error( $error_msg, E_USER_WARNING );
 
 		return false;
@@ -289,10 +310,12 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 	 * @return bool True if file copied successfully, False otherwise.
 	 */
 	public function move( $source, $destination, $overwrite = false ) {
+		// translators: 1 - method name
 		$error_msg = sprintf( __( 'The `%s` method cannot be called directly. Please use `WP_Filesystem_VIP::move` instead' ), __METHOD__ );
 
 		$this->errors->add( 'incorrect-usage', $error_msg );
 
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error, WordPress.Security.EscapeOutput.OutputNotEscaped
 		trigger_error( $error_msg, E_USER_WARNING );
 
 		return false;
@@ -479,8 +502,18 @@ class WP_Filesystem_VIP_Uploads extends \WP_Filesystem_Base {
 
 		$this->errors->add( 'unimplemented-method', $error_msg );
 
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_trigger_error, WordPress.Security.EscapeOutput.OutputNotEscaped
 		trigger_error( $error_msg, E_USER_WARNING );
 
 		return $return_value;
+	}
+
+	/**
+	 * Set the local files property
+	 *
+	 * @param array $local_files Array of local files
+	 */
+	public function set_local_files( array $local_files ) {
+		$this->local_files = $local_files;
 	}
 }
