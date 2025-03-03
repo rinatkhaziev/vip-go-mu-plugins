@@ -784,5 +784,6 @@ class WP_Filesystem_VIP extends \WP_Filesystem_Base {
 	 */
 	public function set_local_files( array $local_files ) {
 		$this->local_files = $local_files;
+
 	}
 }
